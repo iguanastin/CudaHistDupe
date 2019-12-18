@@ -46,6 +46,7 @@ int main(int argc, char* argv[]) {
     float confidence = 0.99f;
     float color_variance = 0.25f;
     int N = 50000;
+    bool cuda = true;
 
     std::chrono::steady_clock::time_point time;
 
@@ -112,16 +113,43 @@ int main(int argc, char* argv[]) {
     std::cout << "Built confidence array in: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - time).count() << " ms" << std::endl;
 
 
-    // Find duplicates with CUDA
-    std::cout << "Finding dupes..." << std::endl;
+    // Find duplicates
+    std::cout << "Finding duplicates..." << std::endl;
+    cudaError_t cudaStatus;
+    int result_count = 0;
     time = std::chrono::steady_clock::now();
-    int result_count;
-    cudaError_t cudaStatus = findDupes(data, N, pairs, &result_count, max_results, conf);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "Kernel failed!");
-        return 1;
+    if (cuda) {
+        // With CUDA
+        cudaStatus = findDupes(data, N, pairs, &result_count, max_results, conf);
+        if (cudaStatus != cudaSuccess) {
+            fprintf(stderr, "Kernel failed!");
+            return 1;
+        }
+        for (int i = 0; i < result_count; i++) {
+            pairs[i].id1 = ids[pairs[i].id1];
+            pairs[i].id2 = ids[pairs[i].id2];
+        }
+    } else {
+        // Sequentially
+        for (int i = 0; i < N; i++) {
+            for (int j = i + 1; j < N; j++) {
+                double d = 0;
+                for (int k = 0; k < 128; k++) {
+                    d += fabs(data[i * 128 + k] - data[j * 128 + k]);
+                }
+                d = 1 - (d / 8);
+                if (d > fmaxf(conf[i], conf[j])) {
+                    Pair p;
+                    p.similarity = (float) d;
+                    p.id1 = ids[i];
+                    p.id2 = ids[j];
+                    pairs.push_back(p);
+                    result_count++;
+                }
+            }
+        }
     }
-    std::cout << "Found duplicates with CUDA in: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - time).count() << " ms" << std::endl;
+    std::cout << "Found duplicates in: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - time).count() << " ms" << std::endl;
 
 
     // Print some results
@@ -243,11 +271,27 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
     }
-    pairs.insert(pairs.end(), temp_pairs, temp_pairs + result_count[0]);
+    for (int i = 0; i < result_count[0]; i++) {
+        int p1id1 = temp_pairs[i].id1;
+        int p1id2 = temp_pairs[i].id2;
+        bool found = false;
+        for each (const Pair p2 in pairs) {
+            if ((p1id1 == p2.id1 && p1id2 == p2.id2) || (p1id1 == p2.id2 && p1id2 == p2.id1)) {
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            pairs.push_back(temp_pairs[i]);
+        }
+    }
     delete[] temp_pairs;
-    std::cout << "Copied results from GPU memory in: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - time).count() << " ms" << std::endl;
+    result_count[0] = (int) pairs.size();
+    std::cout << "Retrieved results from GPU memory in: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - time).count() << " ms" << std::endl;
 
 Error:
+
     // Free cuda memory
     std::cout << "Freeing GPU memory..." << std::endl;
     time = std::chrono::steady_clock::now();
@@ -274,7 +318,7 @@ __global__ void histDupeKernel(const float* data, int N, Pair* results, int* res
         __shared__ float conf[128]; // Shared array of confidence values for all histograms owned by this block
         conf[thread] = confidence[index]; // Coalesced read of confidence values
 
-        float hist[128]; // Histogram owned by this block, stored in registers
+        float hist[128]; // Histogram owned by this thread, stored in registers
         for (int i = 0; i < 128; i++) {
             hist[i] = data[index * 128 + i];
         }
