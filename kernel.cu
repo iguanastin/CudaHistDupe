@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
 
     // Initialize variables
     int max_results = 1000000;
-    float confidence = 0.99f;
+    float confidence = 0.95f;
     float color_variance = 0.25f;
     int N = 50000;
     bool cuda = true;
@@ -282,29 +282,31 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
     }
     result_count[0] = __min(result_count[0], max_results); // Clamp result_count
     // Read result pairs into buffer
-    Pair* temp_pairs = new Pair[result_count[0]];
-    cudaStatus = cudaMemcpy((void*) temp_pairs, d_pairs, sizeof(Pair) * result_count[0], cudaMemcpyDeviceToHost);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
-    // Only keep pairs that are unique (pairs are commutative)
-    for (int i = 0; i < result_count[0]; i++) {
-        int p1id1 = temp_pairs[i].id1;
-        int p1id2 = temp_pairs[i].id2;
-        bool found = false;
-        for each (const Pair p2 in pairs) {
-            if ((p1id1 == p2.id1 && p1id2 == p2.id2) || (p1id1 == p2.id2 && p1id2 == p2.id1)) {
-                found = true;
-                break;
+    {
+        Pair* temp_pairs = new Pair[result_count[0]];
+        cudaStatus = cudaMemcpy((void*)temp_pairs, d_pairs, sizeof(Pair) * result_count[0], cudaMemcpyDeviceToHost);
+        if (cudaStatus != cudaSuccess) {
+            fprintf(stderr, "cudaMemcpy failed!");
+            goto Error;
+        }
+        // Only keep pairs that are unique (pairs are commutative)
+        for (int i = 0; i < result_count[0]; i++) {
+            int p1id1 = temp_pairs[i].id1;
+            int p1id2 = temp_pairs[i].id2;
+            bool found = false;
+            for (const Pair p2 : pairs) {
+                if ((p1id1 == p2.id1 && p1id2 == p2.id2) || (p1id1 == p2.id2 && p1id2 == p2.id1)) {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                pairs.push_back(temp_pairs[i]);
             }
         }
-
-        if (!found) {
-            pairs.push_back(temp_pairs[i]);
-        }
+        delete[] temp_pairs;
     }
-    delete[] temp_pairs;
     result_count[0] = (int) pairs.size();
     std::cout << "Retrieved results from GPU memory in: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - time).count() << " ms" << std::endl;
 
