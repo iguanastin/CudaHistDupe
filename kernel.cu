@@ -180,14 +180,20 @@ int main(int argc, char* argv[]) {
 
 cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pairs, int* result_count, int max_results, float* confidence) {
 
-    float* d_data;
-    Pair* d_pairs;
-    float* d_confidence;
-    int* d_result_count;
+    float* d_data; // Data device pointer
+    Pair* d_pairs; // Pairs device pointer
+    float* d_confidence; // Confidence device pointer
+    int* d_result_count; // Result count device pointer
 
-    cudaError_t cudaStatus;
+    cudaError_t cudaStatus; // CUDA error
 
-    std::chrono::steady_clock::time_point time;
+    std::chrono::steady_clock::time_point time; // Time tracking
+
+    unsigned int dN = N; // Padded device N to match block size
+    if (N % 64 != 0) {
+        dN = (unsigned int) ceil((double) N / 64) * 64;
+    }
+    std::cout << "Adjusted N: " << dN << std::endl;
 
     // Choose which GPU to run on, change this on a multi-GPU system
     cudaStatus = cudaSetDevice(0);
@@ -199,7 +205,7 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
     // Allocate GPU buffers
     std::cout << "Allocating GPU memory..." << std::endl;
     time = std::chrono::steady_clock::now();
-    cudaStatus = cudaMalloc((void**) &d_data, sizeof(float) * 128 * N);
+    cudaStatus = cudaMalloc((void**) &d_data, sizeof(float) * 128 * dN);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
@@ -214,7 +220,7 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
-    cudaStatus = cudaMalloc((void**) &d_confidence, sizeof(float) * N);
+    cudaStatus = cudaMalloc((void**) &d_confidence, sizeof(float) * dN);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
@@ -234,13 +240,23 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
     }
+    if (dN > N) {
+        float* temp_conf = new float[dN - N];
+        for (int i = 0; i < dN - N; i++) temp_conf[i] = 2; // Impossible confidence
+        cudaStatus = cudaMemcpy(d_confidence + N, temp_conf, sizeof(float) * (dN - N), cudaMemcpyHostToDevice);
+        delete[] temp_conf;
+        if (cudaStatus != cudaSuccess) {
+            fprintf(stderr, "cudaMemcpy failed!");
+            goto Error;
+        }
+    }
     std::cout << "Copied data to GPU memory in: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - time).count() << " ms" << std::endl;
 
 
     // Launch a kernel on the GPU
     std::cout << "Launching kernel..." << std::endl;
     time = std::chrono::steady_clock::now();
-    histDupeKernel KERNEL_ARGS((int) ceil((double) N / 128), 128) (d_data, N, d_pairs, d_result_count, max_results, d_confidence);
+    histDupeKernel KERNEL_ARGS((int) ceil((double) N / 64), 64) (d_data, N, d_pairs, d_result_count, max_results, d_confidence);
 
     // Check for any errors launching the kernel
     cudaStatus = cudaGetLastError();
@@ -265,12 +281,14 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
         goto Error;
     }
     result_count[0] = __min(result_count[0], max_results); // Clamp result_count
+    // Read result pairs into buffer
     Pair* temp_pairs = new Pair[result_count[0]];
     cudaStatus = cudaMemcpy((void*) temp_pairs, d_pairs, sizeof(Pair) * result_count[0], cudaMemcpyDeviceToHost);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMemcpy failed!");
         goto Error;
     }
+    // Only keep pairs that are unique (pairs are commutative)
     for (int i = 0; i < result_count[0]; i++) {
         int p1id1 = temp_pairs[i].id1;
         int p1id2 = temp_pairs[i].id2;
@@ -312,30 +330,32 @@ __global__ void histDupeKernel(const float* data, int N, Pair* results, int* res
     int block = blockIdx.x; // Block index
     int block_size = blockDim.x; // Size of each block
 
-    int index = block_size * block + thread; // Index of histogram for this thread
+    int block_start = block_size * block;
+    int index = block_start + thread; // Index of histogram for this thread
 
-    if (index < N) {
-        __shared__ float conf[128]; // Shared array of confidence values for all histograms owned by this block
-        conf[thread] = confidence[index]; // Coalesced read of confidence values
+    __shared__ float conf[64]; // Shared array of confidence values for all histograms owned by this block
+    conf[thread] = confidence[index]; // Coalesced read of confidence values
 
-        float hist[128]; // Histogram owned by this thread, stored in registers
-        for (int i = 0; i < 128; i++) {
-            hist[i] = data[index * 128 + i];
-        }
+    __shared__ float hists[128 * 64];
+    for (int i = 0; i < 64; i++) {
+        hists[i * 128 + thread] = data[(block_start + i) * 128 + thread];
+        hists[i * 128 + thread + 64] = data[(block_start + i) * 128 + 64 + thread];
+    }
 
-        __shared__ float other[128]; // Histogram to compare all owned histograms against parallely
+    __shared__ float other[128]; // Histogram to compare all owned histograms against parallely
+    for (int i = 0; i < N && *result_count < max_results; i++) {
 
-        for (int i = 0; i < N && *result_count < max_results; i++) {
+        float other_conf = confidence[i]; // All threads read confidence for other histogram into register
 
-            float other_conf = confidence[i]; // All threads read confidence for other histogram into register
+        other[thread] = data[i * 128 + thread]; // Coalesced read of other histogram into shared memory
+        other[thread + 64] = data[i * 128 + thread + 64];
 
-            other[thread] = data[i * 128 + thread]; // Coalesced read of other histogram into shared memory
+        __syncthreads(); // Ensure all values read
 
-            __syncthreads(); // Ensure all values read
-
+        if (index < N) {
             float d = 0;
             for (int k = 0; k < 128; k++) { // Compute sum of distances between thread-owned histogram and shared histogram
-                d += std::fabsf(hist[k] - other[k]);
+                d += std::fabsf(hists[thread * 128 + k] - other[k]);
             }
             d = 1 - (d / 8); // Massage the difference into a nice % similarity number, between 0 and 1
 
@@ -348,9 +368,9 @@ __global__ void histDupeKernel(const float* data, int N, Pair* results, int* res
                     results[result_index].id2 = i;
                 }
             }
-
-            __syncthreads(); // Ensure all threads have finished before looping and reading new shared histogram
         }
+
+        __syncthreads(); // Ensure all threads have finished before looping and reading new shared histogram
     }
 
 }
