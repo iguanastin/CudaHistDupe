@@ -78,7 +78,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="histdupeKernel.cu" />
-    <CudaCompile Include="kernel.cu" />
+    <CudaCompile Include="histdupe.cu" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="histdupe.h" />
