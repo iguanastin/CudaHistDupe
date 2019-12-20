@@ -1,8 +1,9 @@
 
 #include "histdupe.h"
-#include <algorithm>
-#include <iterator>
 
+
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
 
 
 
@@ -18,10 +19,10 @@ __global__ void histDupeKernel(const float* data, float* confidence, Pair* resul
     __shared__ float conf[64]; // Shared array of confidence values for all histograms owned by this block
     conf[thread] = confidence[index]; // Coalesced read of confidence values
 
-    __shared__ float hists[128 * 64];
+    __shared__ float hists[128 * 64]; // Shared array of all histograms owned by this block
     for (int i = 0; i < 64; i++) {
-        hists[i * 128 + thread] = data[(block_start + i) * 128 + thread];
-        hists[i * 128 + thread + 64] = data[(block_start + i) * 128 + 64 + thread];
+        hists[i * 128 + thread] = data[(block_start + i) * 128 + thread]; // Coalesced read of first half of histogram
+        hists[i * 128 + thread + 64] = data[(block_start + i) * 128 + 64 + thread]; // Coalesced read of second half of histogram
     }
 
     __shared__ float other[128]; // Histogram to compare all owned histograms against parallely
@@ -37,7 +38,7 @@ __global__ void histDupeKernel(const float* data, float* confidence, Pair* resul
         if (index < N) {
             float d = 0;
             for (int k = 0; k < 128; k++) { // Compute sum of distances between thread-owned histogram and shared histogram
-                d += std::fabsf(hists[thread * 128 + k] - other[k]);
+                d += fabsf(hists[thread * 128 + k] - other[k]);
             }
             d = 1 - (d / 8); // Massage the difference into a nice % similarity number, between 0 and 1
 

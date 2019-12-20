@@ -1,11 +1,6 @@
 #pragma once
 
 
-
-#include "cuda_runtime.h"
-#include "device_launch_parameters.h"
-
-
 // ifdef used to ignore false positive CUDA syntax errors
 #ifdef __INTELLISENSE__
 #include "intellisense_cuda_intrinsics.h"

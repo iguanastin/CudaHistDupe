@@ -188,6 +188,10 @@ template <typename T>
 T __shfl_xor_sync(unsigned mask, T var, int laneMask, int width = warpSize) {};
 
 
+// My additions
 void __syncthreads();
+float fabsf(float);
+float fmaxf(float, float);
+
 
 #endif
