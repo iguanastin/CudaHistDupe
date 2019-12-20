@@ -12,7 +12,7 @@
 /*
 Utility method for launching a CUDA kernel. Performes all the nasty checks, allocation, and copying of data.
 */
-cudaError_t findDupes(const float*, unsigned int, std::vector<Pair>&, int*, int, float*);
+cudaError_t findDupes(const float*, const unsigned int, std::vector<Pair>&, unsigned int*, const unsigned int, const float*);
 
 
 
@@ -26,13 +26,13 @@ int main(int argc, char* argv[]) {
 
     // Initialize variables
     // Maximum number of results to return. Only applies to CUDA launches
-    int max_results = 1000000;
+    unsigned int max_results = 1000000;
     // Base confidence value for similar pairs
     float confidence = 0.95f;
     // Maximum color variance per histogram. Used to determine if an image is black-and-white or colorful
     float color_variance = 0.25f;
     // Number of histograms in the dataset
-    int N = 50000;
+    unsigned int N = 50000;
     // Use CUDA to find similar pair
     bool cuda = true;
 
@@ -67,7 +67,7 @@ int main(int argc, char* argv[]) {
 
     FILE* file; // Data file
     file = fopen(argv[1], "r"); // Open data file to read
-    for (int i = 0; i < N; i++) {
+    for (unsigned int i = 0; i < N; i++) {
         fscanf(file, "%d", &ids[i]); // Read first int as id of histogram
         for (int j = 0; j < 128; j++) { // Read 128 floats as histogram elements
             fscanf(file, "%f", &data[i * 128 + j]);
@@ -85,11 +85,11 @@ int main(int argc, char* argv[]) {
 
     float confidence_square = 1 - (1 - confidence) * (1 - confidence); // Squared confidence for comparing black and white images.
     // Generate confidence array
-    for (int i = 0; i < N; i++) {
+    for (unsigned int i = 0; i < N; i++) {
         float d = 0;
 
         // Compute sum of color variance across histogram
-        for (int k = 0; k < 32; k++) {
+        for (unsigned int k = 0; k < 32; k++) {
             // Ignore alpha values (first 32 floats)
             float r = data[i * 128 + k + 32];
             float g = data[i * 128 + k + 64];
@@ -112,7 +112,7 @@ int main(int argc, char* argv[]) {
     time = std::chrono::steady_clock::now();
 
     cudaError_t cudaStatus; // CUDA Status variable
-    int result_count = 0; // Track number of results
+    unsigned int result_count = 0; // Track number of results
     if (cuda) {
         // With CUDA
         cudaStatus = findDupes(data, N, pairs, &result_count, max_results, conf);
@@ -122,16 +122,16 @@ int main(int argc, char* argv[]) {
         }
 
         // Convert indexes into histogram ids
-        for (int i = 0; i < result_count; i++) {
+        for (unsigned int i = 0; i < result_count; i++) {
             pairs[i].id1 = ids[pairs[i].id1];
             pairs[i].id2 = ids[pairs[i].id2];
         }
     } else {
         // Sequentially
-        for (int i = 0; i < N; i++) {
-            for (int j = i + 1; j < N; j++) {
+        for (unsigned int i = 0; i < N; i++) {
+            for (unsigned int j = i + 1; j < N; j++) {
                 double d = 0;
-                for (int k = 0; k < 128; k++) {
+                for (unsigned int k = 0; k < 128; k++) {
                     d += fabs(data[i * 128 + k] - data[j * 128 + k]);
                 }
                 d = 1 - (d / 8);
@@ -153,7 +153,7 @@ int main(int argc, char* argv[]) {
     // Print some results
     std::cout << "Found pairs: " << result_count << std::endl;
     std::cout << "Example results:" << std::endl;
-    for (int i = 0; i < __min(result_count, 10); i++) {
+    for (unsigned int i = 0; i < __min(result_count, 10); i++) {
         std::cout << "\t" << ids[pairs[i].id1] << " - " << ids[pairs[i].id2] << ":\t\t" << pairs[i].similarity << std::endl;
     }
 
@@ -176,16 +176,16 @@ int main(int argc, char* argv[]) {
 
 
 
-cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pairs, int* result_count, int max_results, float* confidence) {
+cudaError_t findDupes(const float* data, const unsigned int N, std::vector<Pair>& pairs, unsigned int* result_count, const unsigned int max_results, const float* confidence) {
 
     float* d_data; // Data device pointer
     Pair* d_pairs; // Pairs device pointer
     float* d_confidence; // Confidence device pointer
-    int* d_result_count; // Result count device pointer
-
+    unsigned int* d_result_count; // Result count device pointer
     cudaError_t cudaStatus; // CUDA error
 
     std::chrono::steady_clock::time_point time; // Time tracking
+
 
     unsigned int dN = N; // Padded device N to match block size
     if (N % 64 != 0) {
@@ -193,12 +193,14 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
     }
     std::cout << "Adjusted N: " << dN << std::endl;
 
+
     // Choose which GPU to run on, change this on a multi-GPU system
     cudaStatus = cudaSetDevice(0);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaSetDevice failed!");
         goto Error;
     }
+
 
     // Allocate GPU buffers
     std::cout << "Allocating GPU memory..." << std::endl;
@@ -213,7 +215,7 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
-    cudaStatus = cudaMalloc((void**) &d_result_count, sizeof(int)); // Allocate single int for result count
+    cudaStatus = cudaMalloc((void**) &d_result_count, sizeof(unsigned int)); // Allocate single int for result count
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
@@ -224,6 +226,7 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
         goto Error;
     }
     std::cout << "Allocated GPU memory in: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - time).count() << " ms" << std::endl;
+
 
     // Copy input data from host memory to GPU buffers
     std::cout << "Copying data to device..." << std::endl;
@@ -241,7 +244,7 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
     if (dN > N) {
         // Copy padded data to device at end of confidence array
         float* temp_conf = new float[dN - N]; // Temp array of padded confidence values
-        for (int i = 0; i < dN - N; i++) temp_conf[i] = 2; // Impossible confidence
+        for (unsigned int i = 0; i < dN - N; i++) temp_conf[i] = 2; // Impossible confidence
         cudaStatus = cudaMemcpy(d_confidence + N, temp_conf, sizeof(float) * (dN - N), cudaMemcpyHostToDevice); // Copy padded confidence values to device
         delete[] temp_conf; // Delete temp array
         if (cudaStatus != cudaSuccess) {
@@ -257,6 +260,7 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
     time = std::chrono::steady_clock::now();
     histDupeKernel KERNEL_ARGS((int) ceil((double) N / 64), 64) (d_data, d_confidence, d_pairs, d_result_count, N, max_results); // Launch CUDA kernel
 
+
     // Check for any errors launching the kernel
     cudaStatus = cudaGetLastError();
     if (cudaStatus != cudaSuccess) {
@@ -270,6 +274,7 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
         goto Error;
     }
     std::cout << "Ran GPU kernel in: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - time).count() << " ms" << std::endl;
+
 
     // Copy output from GPU buffer to host memory.
     std::cout << "Copying results from device..." << std::endl;
@@ -289,7 +294,7 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
             goto Error;
         }
         // Only keep pairs that are unique (pairs are commutative)
-        for (int i = 0; i < result_count[0]; i++) {
+        for (unsigned int i = 0; i < result_count[0]; i++) {
             int p1id1 = temp_pairs[i].id1;
             int p1id2 = temp_pairs[i].id2;
             bool found = false;
@@ -308,6 +313,7 @@ cudaError_t findDupes(const float* data, unsigned int N, std::vector<Pair>& pair
     }
     result_count[0] = (int) pairs.size(); // Reset result_count to count of final result set
     std::cout << "Retrieved results from GPU memory in: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - time).count() << " ms" << std::endl;
+
 
 Error:
     // Free cuda memory

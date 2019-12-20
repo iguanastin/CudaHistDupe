@@ -74,6 +74,7 @@
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
+      <Keep>true</Keep>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>

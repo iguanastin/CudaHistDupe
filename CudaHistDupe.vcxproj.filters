@@ -2,8 +2,10 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClInclude Include="intellisense_cuda_intrinsics.h" />
+    <ClInclude Include="histdupe.h" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="histdupe.cu" />
+    <CudaCompile Include="histdupeKernel.cu" />
   </ItemGroup>
 </Project>
