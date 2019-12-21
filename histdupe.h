@@ -24,4 +24,4 @@ Kernel method signature
 Takes in device pointers for data array, result array, confidence array, and result count.
 Also takes size of data set and max allowed number of results.
 */
-__global__ void histDupeKernel(const float*, const float*, const float*, const float*, int*, int*, float*, int*, const int, const int, const int);
+__global__ void histDupeKernel(const float*, const float*, const float*, const float*, int*, int*, int*, int*, float*, int*, const int, const int, const int);

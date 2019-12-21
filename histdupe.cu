@@ -12,7 +12,7 @@
 /*
 Utility method for launching a CUDA kernel. Performes all the nasty checks, allocation, and copying of data.
 */
-cudaError_t findDupes(const float*, const float*, const float*, const float*, std::vector<Pair>&, int*, const int, const int, const int);
+cudaError_t findDupes(const float*, const float*, const float*, const float*, const int*, const int*, std::vector<Pair>&, int*, const int, const int, const int);
 
 
 
@@ -133,16 +133,10 @@ int main(int argc, char* argv[]) {
     int result_count = 0; // Track number of results
     if (cuda) {
         // With CUDA
-        cudaStatus = findDupes(data1, data2, conf1, conf2, pairs, &result_count, subN, N, max_results);
+        cudaStatus = findDupes(data1, data2, conf1, conf2, ids1, ids2, pairs, &result_count, subN, N, max_results);
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "Kernel failed!");
             return 1;
-        }
-
-        // Convert indexes into histogram ids
-        for (int i = 0; i < result_count; i++) {
-            pairs[i].id1 = ids1[pairs[i].id1];
-            pairs[i].id2 = ids2[pairs[i].id2];
         }
     } else {
         // Sequentially
@@ -199,15 +193,17 @@ int main(int argc, char* argv[]) {
 
 
 
-cudaError_t findDupes(const float* data1, const float* data2, const float* conf1, const float* conf2, std::vector<Pair>& pairs, int* result_count, const int N1, const int N2, const int max_results) {
+cudaError_t findDupes(const float* data1, const float* data2, const float* conf1, const float* conf2, const int* ids1, const int* ids2, std::vector<Pair>& pairs, int* result_count, const int N1, const int N2, const int max_results) {
 
     float* d_data1; // Data device pointer
     float* d_data2;
+    float* d_confidence1; // Confidence device pointer
+    float* d_confidence2;
+    int* d_ids1;
+    int* d_ids2;
     int* d_results_id1;
     int* d_results_id2;
     float* d_results_similarity;
-    float* d_confidence1; // Confidence device pointer
-    float* d_confidence2;
     int* d_result_count; // Result count device pointer
     cudaError_t cudaStatus; // CUDA error
 
@@ -242,6 +238,26 @@ cudaError_t findDupes(const float* data1, const float* data2, const float* conf1
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
     }
+    cudaStatus = cudaMalloc((void**)&d_confidence1, sizeof(float) * dN); // Allocate memory for confidence array
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMalloc((void**)&d_confidence2, sizeof(float) * N2); // Allocate memory for confidence array
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMalloc((void**)&d_ids1, sizeof(int) * dN); // Allocate memory for ids array
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMalloc((void**)&d_ids2, sizeof(int) * N2); // Allocate memory for ids array
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMalloc failed!");
+        goto Error;
+    }
     cudaStatus = cudaMalloc((void**) &d_results_id1, sizeof(int) * max_results); // Allocate memory for results
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
@@ -258,16 +274,6 @@ cudaError_t findDupes(const float* data1, const float* data2, const float* conf1
         goto Error;
     }
     cudaStatus = cudaMalloc((void**) &d_result_count, sizeof(int)); // Allocate single int for result count
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-    cudaStatus = cudaMalloc((void**) &d_confidence1, sizeof(float) * dN); // Allocate memory for confidence array
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
-    cudaStatus = cudaMalloc((void**)&d_confidence2, sizeof(float) * N2); // Allocate memory for confidence array
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaMalloc failed!");
         goto Error;
@@ -309,13 +315,23 @@ cudaError_t findDupes(const float* data1, const float* data2, const float* conf1
             goto Error;
         }
     }
+    cudaStatus = cudaMemcpy(d_ids1, ids1, sizeof(int) * N1, cudaMemcpyHostToDevice); // Copy ids array to device
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
+    cudaStatus = cudaMemcpy(d_ids2, ids2, sizeof(int) * N2, cudaMemcpyHostToDevice); // Copy ids array to device
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaMemcpy failed!");
+        goto Error;
+    }
     std::cout << "Copied data to GPU memory in: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - time).count() << " ms" << std::endl;
 
 
     // Launch a kernel on the GPU
     std::cout << "Launching kernel..." << std::endl;
     time = std::chrono::steady_clock::now();
-    histDupeKernel KERNEL_ARGS((int) ceil((double) N1 / 64), 64) (d_data1, d_data2, d_confidence1, d_confidence2, d_results_id1, d_results_id2, d_results_similarity, d_result_count, N1, N2, max_results); // Launch CUDA kernel
+    histDupeKernel KERNEL_ARGS((int) ceil((double) N1 / 64), 64) (d_data1, d_data2, d_confidence1, d_confidence2, d_ids1, d_ids2, d_results_id1, d_results_id2, d_results_similarity, d_result_count, N1, N2, max_results); // Launch CUDA kernel
 
 
     // Check for any errors launching the kernel
@@ -394,12 +410,14 @@ Error:
     time = std::chrono::steady_clock::now();
     cudaFree(d_data1);
     cudaFree(d_data2);
+    cudaFree(d_confidence1);
+    cudaFree(d_confidence2);
+    cudaFree(d_ids1);
+    cudaFree(d_ids2);
     cudaFree(d_results_id1);
     cudaFree(d_results_id2);
     cudaFree(d_results_similarity);
     cudaFree(d_result_count);
-    cudaFree(d_confidence1);
-    cudaFree(d_confidence2);
     std::cout << "Freed GPU memory in: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - time).count() << " ms" << std::endl;
 
     return cudaStatus;

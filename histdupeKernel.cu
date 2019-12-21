@@ -7,7 +7,7 @@
 
 
 
-__global__ void histDupeKernel(const float* data1, const float* data2, const float* confidence1, const float* confidence2, int* results_id1, int* results_id2, float* results_similarity, int* result_count, const int N1, const int N2, const int max_results) {
+__global__ void histDupeKernel(const float* data1, const float* data2, const float* confidence1, const float* confidence2, int* ids1, int* ids2, int* results_id1, int* results_id2, float* results_similarity, int* result_count, const int N1, const int N2, const int max_results) {
 
     const unsigned int thread = threadIdx.x; // Thread index within block
     const unsigned int block = blockIdx.x; // Block index
@@ -16,8 +16,10 @@ __global__ void histDupeKernel(const float* data1, const float* data2, const flo
     const unsigned int block_start = block_size * block; // Index of the start of the block
     const unsigned int index = block_start + thread; // Index of this thread
 
-    __shared__ float conf[64]; // Shared array of confidence values for all histograms owned by this block
-    conf[thread] = confidence1[index]; // Coalesced read of confidence values
+    //__shared__ float conf[64]; // Shared array of confidence values for all histograms owned by this block
+    //conf[thread] = confidence1[index]; // Coalesced read of confidence values
+    float conf = confidence1[index];
+    int id = ids1[index];
 
     __shared__ float hists[128 * 64]; // Shared array of all histograms owned by this block
     for (unsigned int i = 0; i < 64; i++) {
@@ -27,8 +29,6 @@ __global__ void histDupeKernel(const float* data1, const float* data2, const flo
 
     __shared__ float other[128]; // Histogram to compare all owned histograms against parallely
     for (unsigned int i = 0; i < N2 && *result_count < max_results; i++) {
-
-        float other_conf = confidence2[i]; // All threads read confidence for other histogram into register
 
         other[thread] = data2[i * 128 + thread]; // Coalesced read of first half of other histogram
         other[thread + 64] = data2[i * 128 + thread + 64]; // Second half
@@ -42,15 +42,15 @@ __global__ void histDupeKernel(const float* data1, const float* data2, const flo
             }
             d = 1 - (d / 8); // Massage the difference into a nice % similarity number, between 0 and 1
 
-            // TODO index no longer implies same id !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            int other_id = ids2[i];
 
-            if (i != index && d > fmaxf(conf[thread], other_conf)) { // Don't compare against self, only compare using highest confidence
+            if (other_id != id && d > fmaxf(conf, confidence2[i])) { // Don't compare against self, only compare using highest confidence
                 int result_index = atomicAdd(result_count, 1); // Increment result count by one atomically (returns value before increment)
                 if (result_index < max_results) {
                     // Store resulting pair
                     results_similarity[result_index] = d;
-                    results_id1[result_index] = index;
-                    results_id2[result_index] = i;
+                    results_id1[result_index] = id;
+                    results_id2[result_index] = other_id;
                 }
             }
         }
