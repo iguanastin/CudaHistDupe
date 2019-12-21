@@ -7,7 +7,7 @@
 
 
 
-__global__ void histDupeKernel(const float* data, const float* confidence, Pair* results, unsigned int* result_count, const unsigned int N, const unsigned int max_results) {
+__global__ void histDupeKernel(const float* data, const float* confidence, int* results_id1, int* results_id2, float* results_similarity, int* result_count, const int N, const int max_results) {
 
     const unsigned int thread = threadIdx.x; // Thread index within block
     const unsigned int block = blockIdx.x; // Block index
@@ -46,9 +46,9 @@ __global__ void histDupeKernel(const float* data, const float* confidence, Pair*
                 int result_index = atomicAdd(result_count, 1); // Increment result count by one atomically (returns value before increment)
                 if (result_index < max_results) {
                     // Store resulting pair
-                    results[result_index].similarity = d;
-                    results[result_index].id1 = index;
-                    results[result_index].id2 = i;
+                    results_similarity[result_index] = d;
+                    results_id1[result_index] = index;
+                    results_id2[result_index] = i;
                 }
             }
         }
